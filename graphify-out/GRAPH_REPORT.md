@@ -1,4 +1,4 @@
-# Graph Report - third-hand  (2026-09-21)
+# Graph Report - GhostHand  (2026-09-21)
 
 ## Corpus Check
 - 74 files · ~33,949 words
@@ -37,11 +37,11 @@
 - .EvaluateAsync
 - AppKit
 - LowLevelKeyboardHook
-- ThirdHandWin — Architecture Decision Records
-- Third Hand
+- GhostHand — Architecture Decision Records
+- GhostHand
 - windows/NativeMethods.json
-- ThirdHandWin — Agent Instructions
-- ThirdHandWin — Port Status
+- GhostHand — Agent Instructions
+- GhostHand — Port Status
 - rebuild.sh script
 - Package.swift
 - notarize.sh
@@ -76,13 +76,13 @@
 - `rebuild.sh script` --calls--> `build.sh script`  [EXTRACTED]
   rebuild.sh → Scripts/build.sh
 - `TaskRunner` --calls--> `RunProgress`  [INFERRED]
-  Sources/ThirdHand/TaskRunner.swift → Sources/ThirdHand/RunProgress.swift
+  Sources/GhostHand/TaskRunner.swift → Sources/GhostHand/RunProgress.swift
 - `TaskRunner` --references--> `ActionHistory`  [EXTRACTED]
-  Sources/ThirdHand/TaskRunner.swift → Sources/ThirdHand/AgentTypes.swift
+  Sources/GhostHand/TaskRunner.swift → Sources/GhostHand/AgentTypes.swift
 - `AppDelegate` --references--> `HotkeyManager`  [EXTRACTED]
-  Sources/ThirdHand/AppDelegate.swift → Sources/ThirdHand/HotkeyManager.swift
+  Sources/GhostHand/AppDelegate.swift → Sources/GhostHand/HotkeyManager.swift
 - `AppDelegate` --references--> `OverlayPanel`  [EXTRACTED]
-  Sources/ThirdHand/AppDelegate.swift → Sources/ThirdHand/OverlayPanel.swift
+  Sources/GhostHand/AppDelegate.swift → Sources/GhostHand/OverlayPanel.swift
 
 ## Import Cycles
 - None detected.
@@ -177,25 +177,25 @@ Nodes (19): App, AppKit, CGEventTapProxy, CGEventType, CoreGraphics, Scene, Elec
 Cohesion: 0.10
 Nodes (16): CancellationTokenSource, Channel, DllImport, HHOOK, HOOKPROC, LPARAM, LRESULT, TaskCompletionSource (+8 more)
 
-### Community 22 - "ThirdHandWin — Architecture Decision Records"
+### Community 22 - "GhostHand — Architecture Decision Records"
 Cohesion: 0.22
-Nodes (8): ADR-001: .NET 8 LTS over .NET 9, ADR-002: Vercel AI Gateway vs Direct TypeSafe API, ADR-003: Ctrl+Win Chord via Low-Level Hook + State Machine, ADR-004: FlaUI.UIA3 for UI Automation, ADR-005: CsWin32 Source Generator for P/Invoke, ADR-006: Serilog with File Sink for Logging, ADR-007: Whisper.net for Local Voice Input, ThirdHandWin — Architecture Decision Records
+Nodes (8): ADR-001: .NET 8 LTS over .NET 9, ADR-002: Vercel AI Gateway vs Direct TypeSafe API, ADR-003: Ctrl+Win Chord via Low-Level Hook + State Machine, ADR-004: FlaUI.UIA3 for UI Automation, ADR-005: CsWin32 Source Generator for P/Invoke, ADR-006: Serilog with File Sink for Logging, ADR-007: Whisper.net for Local Voice Input, GhostHand — Architecture Decision Records
 
-### Community 23 - "Third Hand"
+### Community 23 - "GhostHand"
 Cohesion: 0.25
-Nodes (7): Build from source, Development, Download, How it works, License, Status, Third Hand
+Nodes (7): Build from source, Development, Download, How it works, License, Status, GhostHand
 
 ### Community 24 - "windows/NativeMethods.json"
 Cohesion: 0.50
 Nodes (3): emitSingleFile, public, $schema
 
-### Community 25 - "ThirdHandWin — Agent Instructions"
+### Community 25 - "GhostHand — Agent Instructions"
 Cohesion: 0.40
-Nodes (4): 2. Ground rules, 7. Safety invariants (non-negotiable), graphify, ThirdHandWin — Agent Instructions
+Nodes (4): 2. Ground rules, 7. Safety invariants (non-negotiable), graphify, GhostHand — Agent Instructions
 
-### Community 26 - "ThirdHandWin — Port Status"
+### Community 26 - "GhostHand — Port Status"
 Cohesion: 0.50
-Nodes (3): New Windows Capabilities, ThirdHandWin — Port Status, Upstream Capabilities
+Nodes (3): New Windows Capabilities, GhostHand — Port Status, Upstream Capabilities
 
 ### Community 30 - "GhostHand.Platform/NativeMethods.json"
 Cohesion: 0.50

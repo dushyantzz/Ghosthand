@@ -2,7 +2,7 @@
 GhostHand (Windows) - AI Desktop Assistant
 ========================================================================
 
-GhostHand is a Windows-native AI assistant inspired by macOS Third Hand.
+GhostHand is a Windows-native AI assistant inspired by macOS GhostHand.
 It allows you to focus any application, press a global hotkey, and command
 it using plain text or voice.
 
