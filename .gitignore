@@ -4,7 +4,7 @@ GhostHand.app/
 *.swp
 .swiftpm/
 
-.ghosthand-signing-identity
+.thirdhand-signing-identity
 
 # Local credentials and diagnostics
 .env
