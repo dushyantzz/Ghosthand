@@ -8,6 +8,16 @@ public record AuditLogEntry
     [JsonPropertyName("timestamp")]
     public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
 
+    /// <summary>Correlates every entry produced by a single <c>AgentLoop.RunAsync</c> invocation.</summary>
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
+
+    /// <summary>Agent-loop step that produced this entry (0 for pre-loop policy refusals).</summary>
+    [JsonPropertyName("step")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Step { get; init; }
+
     [JsonPropertyName("goal")]
     public string Goal { get; init; } = string.Empty;
 

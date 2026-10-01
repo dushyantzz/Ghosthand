@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
-namespace GhostHand.Tests.Agent;
+namespace GhostHand.Core.Tests.Agent;
 
 public class AgentLoopTests
 {
