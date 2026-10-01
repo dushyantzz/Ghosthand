@@ -4,6 +4,11 @@
 
 GhostHand reads accessible UI controls via Windows UI Automation, selects the optimal actions using the **Jev** decision model (`typesafe-ai/jev`) via **Vercel AI Gateway**, types, clicks, and verifies the outcome in real time.
 
+> **macOS port:** this repository also contains a native Swift port under [`macos/`](macos/README.md)
+> that runs on macOS and drives the **local Laya** decision model instead of Jev/Vercel — no API
+> key, no network. Build and run it with `macos/Scripts/build.sh` / `macos/Scripts/make-app-bundle.sh`;
+> see [`macos/README.md`](macos/README.md).
+
 Before any critical or irreversible step (*Submit, Apply, Send, Pay, Delete, Post, Install, Confirm*), GhostHand pauses and asks you to approve. Routine steps execute automatically.
 
 ---
