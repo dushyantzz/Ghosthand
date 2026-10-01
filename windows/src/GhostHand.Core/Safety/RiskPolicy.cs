@@ -1,4 +1,5 @@
-﻿using System.Text.RegularExpressions;
+using System.Text;
+using System.Text.RegularExpressions;
 using GhostHand.Core.Interfaces;
 using GhostHand.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -37,14 +38,26 @@ public class RiskPolicy : IRiskPolicy
 
     /// <summary>
     /// Checks if the target application process is on the deny-list (e.g. password managers).
+    /// Matching is case-insensitive and substring-based (mirroring the macOS port) so that
+    /// renamed or suffixed binaries such as "1password-beta" or "KeePassXC" are still caught.
     /// </summary>
     public bool IsAppDenied(AppTarget appTarget, out string reason)
     {
-        if (_options.DenyListedProcesses.Contains(appTarget.ProcessName))
+        var processName = appTarget.ProcessName?.Trim() ?? string.Empty;
+        var executablePath = appTarget.ExecutablePath?.Trim() ?? string.Empty;
+
+        foreach (var denied in _options.DenyListedProcesses)
         {
-            reason = $"Application process '{appTarget.ProcessName}' is on the security deny-list.";
-            _logger.LogWarning("Security deny-list triggered: {Reason}", reason);
-            return true;
+            if (denied.Length == 0)
+                continue;
+
+            if (processName.Contains(denied, StringComparison.OrdinalIgnoreCase)
+                || executablePath.Contains(denied, StringComparison.OrdinalIgnoreCase))
+            {
+                reason = $"Application process '{appTarget.ProcessName}' is on the security deny-list.";
+                _logger.LogWarning("Security deny-list triggered: {Reason}", reason);
+                return true;
+            }
         }
 
         reason = string.Empty;
@@ -77,10 +90,10 @@ public class RiskPolicy : IRiskPolicy
             return false;
         }
 
-        var match = _prohibitedRegex.Match(goal);
+        var match = _prohibitedRegex.Match(NormalizeForMatch(goal));
         if (match.Success)
         {
-            reason = $"Prohibited by safety policy: Deletion tasks (matching ''{match.Value}'') are strictly prohibited.";
+            reason = $"Prohibited by safety policy: Deletion tasks (matching '{match.Value}') are strictly prohibited.";
             _logger.LogWarning("Goal prohibited by policy: {Reason}", reason);
             return true;
         }
@@ -111,10 +124,10 @@ public class RiskPolicy : IRiskPolicy
         // Use regex to find any deletion term in the text
         foreach (var text in textToInspect)
         {
-            var match = _prohibitedRegex.Match(text);
+            var match = _prohibitedRegex.Match(NormalizeForMatch(text));
             if (match.Success)
             {
-                reason = $"Prohibited by safety policy: Action ''{decision.Operation}'' on ''{target?.DisplayLabel ?? decision.TargetLabel}'' matches deletion term ''{match.Value}''.";
+                reason = $"Prohibited by safety policy: Action '{decision.Operation}' on '{target?.DisplayLabel ?? decision.TargetLabel}' matches deletion term '{match.Value}'.";
                 _logger.LogWarning("Action prohibited by policy: {Reason}", reason);
                 return true;
             }
@@ -122,5 +135,49 @@ public class RiskPolicy : IRiskPolicy
 
         reason = string.Empty;
         return false;
+    }
+
+    /// <summary>
+    /// Normalises text before deletion-term matching: strips zero-width / bidirectional
+    /// control characters that could smuggle a prohibited word past the regex
+    /// (e.g. "del\u200Bete"), then applies Unicode NFC so decomposed forms also match.
+    /// </summary>
+    private static string NormalizeForMatch(string text)
+    {
+        var filtered = new StringBuilder(text.Length);
+        foreach (var ch in text)
+        {
+            switch (ch)
+            {
+                case '\u200B': // zero-width space
+                case '\u200C': // zero-width non-joiner
+                case '\u200D': // zero-width joiner
+                case '\u2060': // word joiner
+                case '\uFEFF': // zero-width no-break space
+                case '\u202A': // bidi embedding/override controls
+                case '\u202B':
+                case '\u202C':
+                case '\u202D':
+                case '\u202E':
+                    continue;
+                default:
+                    filtered.Append(ch);
+                    break;
+            }
+        }
+
+        var filteredText = filtered.ToString();
+
+        // String.Normalize throws ArgumentException on malformed Unicode (unpaired surrogates).
+        // A hostile label must not be able to turn the guard into a crash, so fall back to the
+        // filtered text — the control characters are already gone either way.
+        try
+        {
+            return filteredText.Normalize(NormalizationForm.FormC);
+        }
+        catch (ArgumentException)
+        {
+            return filteredText;
+        }
     }
 }

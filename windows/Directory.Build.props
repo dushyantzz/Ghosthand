@@ -8,6 +8,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
+    <!--
+      Lets the Windows targeting pack be restored when the Core library and the Core-only tests
+      are built on macOS/Linux. A no-op on Windows; without it net8.0-windows projects fail on a
+      non-Windows host with NETSDK1100.
+    -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Company>GhostHand</Company>
     <Authors>GhostHand Team</Authors>
     <Product>GhostHand</Product>
