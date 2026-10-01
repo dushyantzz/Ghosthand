@@ -1,0 +1,43 @@
+# SwiftLint configuration for the macOS port.
+#
+# Deliberately permissive: the goal is a useful, low-noise report that can be tightened over
+# time, not to churn the existing code. Length/complexity rules are disabled because several
+# files (LayaDecisionModel, AgentLoop, AccessibilityScreenReader) are still scheduled for a
+# decomposition pass. Once the baseline is clean, add `swiftlint` as a CI gate.
+
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+  - .modulecache
+  - dist
+  - tmp
+
+disabled_rules:
+  - trailing_comma          # conflicts with the existing (valid) Swift style
+  - todo                    # tracked in the issue tracker instead
+  - identifier_name         # the codebase uses short, domain-accurate names (id, ok, ax, dx)
+  - file_length
+  - type_body_length
+  - function_body_length
+  - cyclomatic_complexity
+
+line_length:
+  warning: 140
+  error: 250
+  ignores_comments: true
+  ignores_urls: true
+
+function_parameter_count:
+  warning: 8
+  error: 12
+
+large_tuple:
+  warning: 4
+  error: 6
+
+# NOTE: the few CoreFoundation casts (AXUIElement / AXValue) that genuinely require `as!` after
+# an explicit CFTypeID check carry an inline `swiftlint:disable:next force_cast` with a comment
+# explaining why. The rule stays enabled so any new force cast is caught.

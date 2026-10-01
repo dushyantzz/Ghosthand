@@ -2,7 +2,7 @@ using FluentAssertions;
 using GhostHand.Core.Hotkey;
 using Xunit;
 
-namespace GhostHand.Tests.Hotkey;
+namespace GhostHand.Core.Tests.Hotkey;
 
 public class ChordStateMachineTests
 {

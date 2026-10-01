@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using FluentAssertions;
 using GhostHand.Core.Agent;
 using GhostHand.Core.Interfaces;
@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
-namespace GhostHand.Tests.Safety;
+namespace GhostHand.Core.Tests.Safety;
 
 /// <summary>
 /// Jarvis-mode risk policy tests.
@@ -443,6 +443,56 @@ public class RiskPolicyTests
         mockAuditLog.Verify(a => a.LogAsync(
             It.Is<AuditLogEntry>(e => e.DecisionType == "prohibited" && e.Operation == AgentOperation.Click),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // RS14: zero-width / bidi control characters cannot smuggle a deletion word past the policy
+    [Fact]
+    public void RS14_ZeroWidthObfuscatedDeletion_IsProhibited()
+    {
+        var obfuscatedGoal = "de\u200Ble\u200Cte the temp files";
+        _policy.IsGoalProhibited(obfuscatedGoal, out _).Should().BeTrue();
+
+        var label = "De\u200Dlete";
+        var decision = new AgentDecision { Operation = AgentOperation.Click, TargetId = "e_del", TargetLabel = label };
+        var element = new AccessibilityElement { Id = "e_del", Role = "Button", Label = label, Enabled = true };
+        _policy.IsActionProhibited(decision, element, "clean up", out _).Should().BeTrue();
+
+        // Bidi override variant: "de\u202Elete" renders as "delete"
+        _policy.IsGoalProhibited("de\u202Elete", out _).Should().BeTrue();
+    }
+
+    // RS15: renamed/suffixed password-manager binaries are still caught by substring matching
+    [Theory]
+    [InlineData("1password-beta")]
+    [InlineData("keepassxc-cli")]
+    [InlineData("bitwarden_helper")]
+    [InlineData("LastPass")]
+    public void RS15_RenamedPasswordManagerBinaries_AreDenied(string processName)
+    {
+        var app = new AppTarget
+        {
+            ProcessId = 7,
+            ProcessName = processName,
+            WindowTitle = "Vault",
+            WindowHandle = (IntPtr)0x7,
+            WindowBounds = new Rectangle(0, 0, 400, 300)
+        };
+
+        _policy.IsAppDenied(app, out var reason).Should().BeTrue();
+        reason.Should().Contain("deny-list");
+    }
+
+    // RS16: malformed Unicode (unpaired surrogate) must not turn the guard into a crash
+    [Fact]
+    public void RS16_MalformedUnicode_DoesNotThrow()
+    {
+        var withUnpairedSurrogate = "delete \uD800 the file";
+
+        Action act = () => _policy.IsGoalProhibited(withUnpairedSurrogate, out _);
+        act.Should().NotThrow();
+
+        // A genuine deletion term alongside malformed Unicode is still caught.
+        _policy.IsGoalProhibited(withUnpairedSurrogate, out _).Should().BeTrue();
     }
 }
 

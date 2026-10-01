@@ -27,3 +27,53 @@ jobs:
 
       - name: Run unit tests
         run: dotnet test windows/GhostHand.sln -c Release --no-build --logger "console;verbosity=normal"
+
+  # The Core-only .NET suite (risk policy, agent loop, sanitizer, hotkey, Jev client) has no
+  # WPF/FlaUI dependency, so it runs on Linux too — fast feedback without a Windows runner.
+  test-core:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Run Core tests
+        run: dotnet test windows/tests/GhostHand.Core.Tests/GhostHand.Core.Tests.csproj -c Release
+
+  # The Swift port is a first-class half of the project (its own risk policy, sanitizer and
+  # agent loop) and had no CI coverage at all. These tests are pure-core and need no Laya server.
+  test-macos:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Lint Swift
+        run: |
+          brew install swiftlint
+          cd macos && swiftlint lint --strict
+
+      - name: Build and run macOS tests
+        working-directory: macos
+        run: bash Scripts/test.sh
+
+  # Cheap static checks that need no extra toolchain: shellcheck ships with the Ubuntu runner,
+  # and .shellcheckrc resolves the scripts' dynamic `source` lines.
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ShellCheck macOS build scripts
+        run: shellcheck macos/Scripts/*.sh

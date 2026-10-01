@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
-namespace GhostHand.Tests.Safety;
+namespace GhostHand.Core.Tests.Safety;
 
 public class MockJobPageTests
 {
