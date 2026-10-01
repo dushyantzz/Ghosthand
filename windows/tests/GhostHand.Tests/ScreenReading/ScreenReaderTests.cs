@@ -177,6 +177,29 @@ public class ScreenReaderTests
         var sanitizedBearer = SecretSanitizer.Sanitize(bearerText, isPassword: false);
         sanitizedBearer.Should().NotContain("my_secret_token_1234567890_abcdef");
         sanitizedBearer.Should().Contain("Bearer [REDACTED]");
+
+        // 5. Provider credentials the original four patterns missed
+        var providerSecrets = new[]
+        {
+            "AKIA" + "IOSFODNN7EXAMPLE",
+            "gho_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+            "xox" + "b-123456789012-abcdefghijklmnop",
+            "AIza" + "SyA1234567890abcdefghijklmnopqrstuv",
+            "sk_" + "live_abcdefghijklmnopqrstuvwx"
+        };
+
+        foreach (var secret in providerSecrets)
+        {
+            var sanitized = SecretSanitizer.Sanitize($"credential={secret} end", isPassword: false);
+            sanitized.Should().NotContain(secret);
+            sanitized.Should().Contain("[REDACTED_KEY]");
+        }
+
+        // 6. PEM private-key header
+        var pem = "-----BEGIN RSA PRIVATE KEY-----MIIEowIBAAKCAQEA-----END RSA PRIVATE KEY-----";
+        var sanitizedPem = SecretSanitizer.Sanitize(pem, isPassword: false);
+        sanitizedPem.Should().NotContain("BEGIN RSA PRIVATE KEY");
+        sanitizedPem.Should().Contain("[REDACTED_PRIVATE_KEY]");
     }
 
     [Fact]

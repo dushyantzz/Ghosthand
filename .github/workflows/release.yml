@@ -9,9 +9,26 @@ on:
 permissions:
   contents: write
 
+env:
+  DOTNET_VERSION: '8.0.x'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+
 jobs:
-  build-and-release:
+  # ---------------------------------------------------------------------------------------------
+  # Windows: self-contained, ReadyToRun builds for x64 and ARM64. Signing is optional and only
+  # runs when the certificate secrets are configured (see RELEASING.md).
+  # ---------------------------------------------------------------------------------------------
+  windows:
+    name: Windows (${{ matrix.rid }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [win-x64, win-arm64]
+
+    env:
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX_BASE64 != '' }}
 
     steps:
       - name: Checkout repository
@@ -20,50 +37,208 @@ jobs:
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore dependencies
         run: dotnet restore windows/GhostHand.sln
 
-      - name: Run unit tests
-        run: dotnet test windows/GhostHand.sln --configuration Release --no-restore --logger "console;verbosity=normal"
+      - name: Run tests (Core + platform suites)
+        run: dotnet test windows/GhostHand.sln -c Release --no-restore --logger "console;verbosity=normal"
 
-      - name: Publish GhostHand.App (win-x64 self-contained)
+      - name: Publish GhostHand.App (${{ matrix.rid }}, self-contained)
         run: >
           dotnet publish windows/src/GhostHand.App/GhostHand.App.csproj
-          -c Release
-          -r win-x64
-          --self-contained true
-          -p:PublishReadyToRun=true
-          -o release-pkg/GhostHand-win-x64
+          -c Release -r ${{ matrix.rid }} --self-contained true
+          -p:PublishReadyToRun=true -o release-pkg/GhostHand-${{ matrix.rid }}
 
-      - name: Publish GhostHand.Cli (win-x64 self-contained)
+      - name: Publish GhostHand.Cli (${{ matrix.rid }}, self-contained)
         run: >
           dotnet publish windows/src/GhostHand.Cli/GhostHand.Cli.csproj
-          -c Release
-          -r win-x64
-          --self-contained true
-          -p:PublishReadyToRun=true
-          -o release-pkg/GhostHand-win-x64
+          -c Release -r ${{ matrix.rid }} --self-contained true
+          -p:PublishReadyToRun=true -o release-pkg/GhostHand-${{ matrix.rid }}
+
+      - name: Sign executables
+        if: env.HAS_WINDOWS_CERT == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $cert = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          $dir = "release-pkg/GhostHand-${{ matrix.rid }}"
+          foreach ($exe in @('GhostHand.App.exe', 'GhostHand.Cli.exe')) {
+            $path = Join-Path $dir $exe
+            if (Test-Path $path) {
+              & signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+                /f $cert /p $env:WINDOWS_CERT_PASSWORD $path
+            }
+          }
+          Remove-Item $cert -Force
 
       - name: Bundle distribution files
         shell: pwsh
         run: |
-          if (Test-Path ".env.example") {
-            Copy-Item -Path ".env.example" -Destination "release-pkg/GhostHand-win-x64/.env.example" -Force
-          }
+          $dir = "release-pkg/GhostHand-${{ matrix.rid }}"
+          Copy-Item -Path ".env.example" -Destination "$dir/.env.example" -Force
           if (Test-Path "windows/packaging") {
-            Copy-Item -Path "windows/packaging/*" -Destination "release-pkg/GhostHand-win-x64/" -Force -Recurse
+            Copy-Item -Path "windows/packaging/*" -Destination "$dir/" -Force -Recurse
           }
-          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.1.0" }
-          Compress-Archive -Path "release-pkg/GhostHand-win-x64/*" -DestinationPath "GhostHand-$tag-win-x64.zip" -Force
 
-      - name: Create GitHub Release
+      - name: Package
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.0.0-dev" }
+          Compress-Archive -Path "release-pkg/GhostHand-${{ matrix.rid }}/*" `
+            -DestinationPath "GhostHand-$tag-${{ matrix.rid }}.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GhostHand-${{ matrix.rid }}
+          path: GhostHand-*-${{ matrix.rid }}.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------------------------
+  # macOS: one universal (x86_64 + arm64) app bundle. Signing and notarisation are optional and
+  # gated on the Apple secrets; without them the job still produces an ad-hoc-signed bundle.
+  # ---------------------------------------------------------------------------------------------
+  macos:
+    name: macOS (universal)
+    runs-on: macos-14
+
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_P12_BASE64 != '' }}
+      HAS_APPLE_NOTARY: ${{ secrets.APPLE_ID != '' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Run macOS unit tests
+        working-directory: macos
+        run: bash Scripts/test.sh
+
+      - name: Build universal app bundle
+        working-directory: macos
+        env:
+          GHOSTHAND_ARCHS: x86_64 arm64
+        run: |
+          set -euo pipefail
+          bash Scripts/make-app-bundle.sh -c release
+          # Fail loudly if the bundle is not actually universal.
+          lipo -archs dist/GhostHand.app/Contents/MacOS/GhostHandApp
+
+      - name: Import Developer ID certificate
+        if: env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain \
+            -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Sign with Developer ID (hardened runtime)
+        if: env.HAS_APPLE_CERT == 'true'
+        working-directory: macos
+        env:
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          # Sign nested executables first, then the bundle. Never rely on --deep for distribution.
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+            dist/GhostHand.app/Contents/MacOS/ghosthand
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+            dist/GhostHand.app/Contents/MacOS/GhostHandApp
+          codesign --force --options runtime --timestamp \
+            --entitlements Resources/GhostHand.entitlements --sign "$IDENTITY" \
+            dist/GhostHand.app
+          codesign --verify --deep --strict --verbose=2 dist/GhostHand.app
+
+      - name: Package app
+        working-directory: macos
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-v0.0.0-dev}"
+          ditto -c -k --keepParent dist/GhostHand.app "GhostHand-$TAG-macos-universal.zip"
+
+      - name: Notarize and staple
+        if: env.HAS_APPLE_NOTARY == 'true' && env.HAS_APPLE_CERT == 'true'
+        working-directory: macos
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-v0.0.0-dev}"
+          ZIP="GhostHand-$TAG-macos-universal.zip"
+          xcrun notarytool submit "$ZIP" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple dist/GhostHand.app
+          spctl -a -vvv -t install dist/GhostHand.app
+          # Re-archive so the shipped zip contains the stapled ticket.
+          rm -f "$ZIP"
+          ditto -c -k --keepParent dist/GhostHand.app "$ZIP"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GhostHand-macos-universal
+          path: macos/GhostHand-*-macos-universal.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------------------------
+  # Single release job: one place creates the release, so the two platform jobs cannot race.
+  # ---------------------------------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+          merge-multiple: true
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: GhostHand-sbom.spdx.json
+          artifact-name: GhostHand-sbom
+
+      - name: Generate checksums
+        working-directory: dist-artifacts
+        run: |
+          set -euo pipefail
+          sha256sum ./* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          files: GhostHand-*-win-x64.zip
-          draft: false
-          prerelease: false
+          files: |
+            dist-artifacts/*
+            GhostHand-sbom.spdx.json
           generate_release_notes: true

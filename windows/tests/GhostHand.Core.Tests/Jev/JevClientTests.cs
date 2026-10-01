@@ -9,7 +9,7 @@ using Moq;
 using Moq.Protected;
 using Xunit;
 
-namespace GhostHand.Tests.Jev;
+namespace GhostHand.Core.Tests.Jev;
 
 public class JevClientTests
 {

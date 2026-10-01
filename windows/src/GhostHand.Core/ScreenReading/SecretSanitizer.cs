@@ -19,6 +19,22 @@ public static class SecretSanitizer
         @"(Bearer\s+)[a-zA-Z0-9_\-\.]{15,}",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // Well-known cloud/provider credentials not covered by ApiKeyRegex:
+    // AWS access keys, GitHub tokens, Slack tokens, Google API keys, Stripe secret keys.
+    private static readonly Regex ProviderKeyRegex = new(
+        @"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b" +
+        @"|\bgh[opsur]_[A-Za-z0-9]{36,}\b" +
+        @"|\bxox[baprs]-[A-Za-z0-9-]{10,}\b" +
+        @"|\bxapp-[A-Za-z0-9-]{10,}\b" +
+        @"|\bAIza[0-9A-Za-z_\-]{35}\b" +
+        @"|\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b",
+        RegexOptions.Compiled);
+
+    // PEM private-key headers. The body carries the secret, so the marker is redacted too.
+    private static readonly Regex PrivateKeyRegex = new(
+        @"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+        RegexOptions.Compiled);
+
     public static string Sanitize(string? text, bool isPassword = false)
     {
         if (isPassword)
@@ -29,6 +45,8 @@ public static class SecretSanitizer
 
         var sanitized = CardRegex.Replace(text, "[REDACTED_CARD]");
         sanitized = ApiKeyRegex.Replace(sanitized, "[REDACTED_KEY]");
+        sanitized = ProviderKeyRegex.Replace(sanitized, "[REDACTED_KEY]");
+        sanitized = PrivateKeyRegex.Replace(sanitized, "[REDACTED_PRIVATE_KEY]");
         sanitized = BearerRegex.Replace(sanitized, "$1[REDACTED]");
 
         return sanitized;

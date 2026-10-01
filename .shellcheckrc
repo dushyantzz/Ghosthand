@@ -1,0 +1,5 @@
+# Scripts source swiftpm-env.sh via a path computed from their own location, which shellcheck
+# cannot follow by default. Resolving relative sources against the script's directory makes
+# `shellcheck macos/Scripts/*.sh` work without inline directives.
+source-path=SCRIPTDIR
+external-sources=true

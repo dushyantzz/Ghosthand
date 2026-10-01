@@ -97,7 +97,31 @@ public class JevDecisionModel : IDecisionModel
 
         // Execute chosen action directly as decided by the Jev model
         _logger.LogInformation("Jev selected action: '{Choice}' (probability: {Conf:P0})", chosenKey, confidence);
-        return ParseActionDecision(chosenKey, confidence, elements);
+
+        var decision = ParseActionDecision(chosenKey, confidence, elements);
+
+        // Confidence gate: when a non-zero threshold is configured, refuse to guess and hand
+        // back to the human. The default threshold is 0.0, which keeps Jarvis mode's
+        // zero-friction behaviour unchanged.
+        if (_options.DecisionConfidenceThreshold > 0
+            && confidence < _options.DecisionConfidenceThreshold
+            && decision.Operation is not (AgentOperation.AskUser or AgentOperation.Done))
+        {
+            _logger.LogInformation(
+                "Top choice '{Choice}' confidence {Conf:P0} is below threshold {Threshold:P0}; asking user instead.",
+                chosenKey, confidence, _options.DecisionConfidenceThreshold);
+
+            return new AgentDecision
+            {
+                Operation = AgentOperation.AskUser,
+                TargetId = decision.TargetId,
+                TargetLabel = decision.TargetLabel,
+                Confidence = confidence,
+                Reason = $"Low confidence ({confidence:P0}) for '{chosenKey}'; threshold is {_options.DecisionConfidenceThreshold:P0}."
+            };
+        }
+
+        return decision;
     }
 
     public async Task<bool> VerifyCompletionAsync(
