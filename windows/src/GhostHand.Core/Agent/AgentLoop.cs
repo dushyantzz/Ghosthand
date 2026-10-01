@@ -1,4 +1,3 @@
-﻿using System.Text.RegularExpressions;
 using GhostHand.Core.Interfaces;
 using GhostHand.Core.Models;
 using GhostHand.Core.Safety;
@@ -119,6 +118,7 @@ public class AgentLoop
         var history = new List<string>();
         var loopGuard = new LoopGuard(_options.MaxConsecutiveStalls);
         int step = 0;
+        var runId = Guid.NewGuid().ToString("N")[..12];
 
         _logger.LogInformation("Starting AgentLoop for goal '{Goal}' on target '{Target}' (DryRun: {DryRun})",
             goal, currentTarget.ProcessName, _options.DryRun);
@@ -133,6 +133,8 @@ public class AgentLoop
             {
                 await _auditLog.LogAsync(new AuditLogEntry
                 {
+                    RunId = runId,
+                    Step = 0,
                     Goal = goal,
                     Operation = AgentOperation.AskUser,
                     AppProcess = currentTarget.ProcessName,
@@ -155,6 +157,8 @@ public class AgentLoop
             {
                 await _auditLog.LogAsync(new AuditLogEntry
                 {
+                    RunId = runId,
+                    Step = 0,
                     Goal = goal,
                     Operation = AgentOperation.AskUser,
                     AppProcess = currentTarget.ProcessName,
@@ -243,6 +247,22 @@ public class AgentLoop
                     ? elements.FirstOrDefault(e => e.Id == decision.TargetId)
                     : null;
 
+                // Shared audit context for every decision taken on this step.
+                AuditLogEntry NewAudit(string decisionType, string? reason) => new()
+                {
+                    RunId = runId,
+                    Step = step,
+                    Goal = goal,
+                    Operation = decision.Operation,
+                    TargetId = decision.TargetId,
+                    TargetLabel = targetElement?.DisplayLabel ?? decision.TargetLabel,
+                    TargetRole = targetElement?.DisplayRole,
+                    AppProcess = currentTarget.ProcessName,
+                    AppTitle = currentTarget.WindowTitle,
+                    DecisionType = decisionType,
+                    Reason = reason
+                };
+
                 // 7. Safety Invariant: Check if action is strictly prohibited (e.g. deletion operations/buttons)
                 if (_riskPolicy.IsActionProhibited(decision, targetElement, goal, out var actionProhibitedReason))
                 {
@@ -251,70 +271,54 @@ public class AgentLoop
 
                     if (_auditLog != null)
                     {
-                        await _auditLog.LogAsync(new AuditLogEntry
-                        {
-                            Goal = goal,
-                            Operation = decision.Operation,
-                            TargetId = decision.TargetId,
-                            TargetLabel = targetElement?.DisplayLabel ?? decision.TargetLabel,
-                            TargetRole = targetElement?.DisplayRole,
-                            AppProcess = currentTarget.ProcessName,
-                            AppTitle = currentTarget.WindowTitle,
-                            DecisionType = "prohibited",
-                            Reason = actionProhibitedReason
-                        }, cancellationToken);
+                        await _auditLog.LogAsync(NewAudit("prohibited", actionProhibitedReason), cancellationToken);
                     }
 
                     return AgentRunResult.Failed(step, history, actionProhibitedReason);
                 }
 
-                // 8. Safety Invariants: Jarvis mode — no confirmation dialogs except for deletion (already blocked above).
-                // Jev Call B (risk escalation) is disabled in Jarvis mode to avoid false approval dialogs.
-                // All safe actions execute automatically.
+                // 8. Safety invariants: honour the risk policy's confirmation requirement.
+                // Jarvis mode's default policy never requires confirmation (deletion is blocked
+                // outright above), but when a policy does require it we must actually ask a human
+                // and fail closed when no prompt is available.
                 var requiresConfirmation = _riskPolicy.RequiresConfirmation(decision, targetElement, currentTarget, out var riskReason);
                 if (requiresConfirmation)
                 {
-                    // This should never be reached in Jarvis mode (RequiresConfirmation always returns false)
-                    // but kept as a safety net for future policy changes.
+                    if (_confirmationPrompt == null)
+                    {
+                        _logger.LogError("Policy requires confirmation but no confirmation prompt is configured. Refusing action.");
+                        NotifyStatus($"Confirmation required but unavailable: {riskReason}");
+                        if (_auditLog != null)
+                        {
+                            await _auditLog.LogAsync(NewAudit("denied", riskReason), cancellationToken);
+                        }
 
-                    // Approved by human
+                        return AgentRunResult.NeedsHumanInput(step, history, riskReason);
+                    }
+
+                    var approved = await _confirmationPrompt.RequestConfirmationAsync(
+                        decision, targetElement, currentTarget, riskReason, cancellationToken);
+
                     if (_auditLog != null)
                     {
-                        await _auditLog.LogAsync(new AuditLogEntry
-                        {
-                            Goal = goal,
-                            Operation = decision.Operation,
-                            TargetId = decision.TargetId,
-                            TargetLabel = targetElement?.DisplayLabel ?? decision.TargetLabel,
-                            TargetRole = targetElement?.DisplayRole,
-                            AppProcess = currentTarget.ProcessName,
-                            AppTitle = currentTarget.WindowTitle,
-                            DecisionType = "confirmed",
-                            Reason = riskReason
-                        }, cancellationToken);
+                        await _auditLog.LogAsync(
+                            NewAudit(approved ? "confirmed" : "rejected", riskReason), cancellationToken);
+                    }
+
+                    if (!approved)
+                    {
+                        NotifyStatus("Action rejected by human.");
+                        return AgentRunResult.Cancelled(step, history);
                     }
                 }
-                else
+                else if (_auditLog != null)
                 {
                     // Auto-approved harmless action
-                    if (_auditLog != null)
-                    {
-                        await _auditLog.LogAsync(new AuditLogEntry
-                        {
-                            Goal = goal,
-                            Operation = decision.Operation,
-                            TargetId = decision.TargetId,
-                            TargetLabel = targetElement?.DisplayLabel ?? decision.TargetLabel,
-                            TargetRole = targetElement?.DisplayRole,
-                            AppProcess = currentTarget.ProcessName,
-                            AppTitle = currentTarget.WindowTitle,
-                            DecisionType = "auto",
-                            Reason = "Harmless action allowed by safety policy."
-                        }, cancellationToken);
-                    }
+                    await _auditLog.LogAsync(
+                        NewAudit("auto", "Harmless action allowed by safety policy."), cancellationToken);
                 }
 
-                // 8. Execute action (Dry-run or live)
+                // 9. Execute action (Dry-run or live)
                 var actionLabel = targetElement != null ? $"'{targetElement.DisplayLabel}'" : decision.TargetId;
                 NotifyStatus($"{stepPrefix}: {decision.Operation} on {actionLabel}");
 
