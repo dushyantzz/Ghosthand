@@ -22,6 +22,11 @@ public abstract class JevException : Exception
             @"(vck_[a-zA-Z0-9_\-]{8,})",
             "[REDACTED]");
 
+        sanitized = System.Text.RegularExpressions.Regex.Replace(
+            sanitized,
+            @"(sk-or-[a-zA-Z0-9_\-]{8,})",
+            "[REDACTED]");
+
         return sanitized;
     }
 }

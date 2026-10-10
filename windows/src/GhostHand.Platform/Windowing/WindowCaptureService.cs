@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing;
 using GhostHand.Core.Interfaces;
 using GhostHand.Core.Models;
@@ -14,17 +14,81 @@ public interface IWindowCaptureService
 
 public class WindowCaptureService : IWindowCaptureService, IWindowTracker
 {
+    private static readonly int SelfProcessId = Environment.ProcessId;
+
+    /// <summary>True for GhostHand's own windows (the popup), which must never become the automation target.</summary>
+    public static bool IsSelf(AppTarget? target) => target != null && target.ProcessId == SelfProcessId;
+
+    /// <summary>
+    /// The foreground window, skipping GhostHand itself: while the popup has focus, the user's app is the
+    /// next visible window in z-order. (Targeting the popup made the agent click its own buttons.)
+    /// </summary>
     public AppTarget? CaptureForegroundWindow()
     {
-        var hwnd = PInvoke.GetForegroundWindow();
-        return CaptureWindowByHwnd(hwnd);
+        var fg = CaptureWindowByHwnd(PInvoke.GetForegroundWindow());
+        return IsSelf(fg) ? CaptureTopmostExternalWindow() : fg;
     }
 
-    public AppTarget? GetActiveTarget(AppTarget currentTarget)
+    /// <summary>Topmost visible, titled top-level window that doesn't belong to GhostHand.</summary>
+    /// <summary>
+    /// Topmost visible window titled with this app name ("Calculator", "Camera"). Store apps' windows belong to
+    /// ApplicationFrameHost, so they can't be found by process name.
+    /// </summary>
+    public static unsafe AppTarget? CaptureWindowByTitle(string appName)
+    {
+        if (string.IsNullOrWhiteSpace(appName)) return null;
+        var name = appName.Trim();
+        AppTarget? found = null;
+        PInvoke.EnumWindows((hwnd, _) =>
+        {
+            if (!PInvoke.IsWindowVisible(hwnd))
+                return true;
+            var candidate = CaptureWindowByHwnd(hwnd);
+            if (candidate == null || IsSelf(candidate) || string.IsNullOrWhiteSpace(candidate.WindowTitle))
+                return true;
+            var title = candidate.WindowTitle.Trim();
+            if (title.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+                title.StartsWith(name + " ", StringComparison.OrdinalIgnoreCase) ||
+                title.EndsWith(" - " + name, StringComparison.OrdinalIgnoreCase))
+            {
+                found = candidate;
+                return false;
+            }
+            return true;
+        }, 0);
+        return found;
+    }
+
+    public static unsafe AppTarget? CaptureTopmostExternalWindow()
+    {
+        AppTarget? found = null;
+        PInvoke.EnumWindows((hwnd, _) =>
+        {
+            if (!PInvoke.IsWindowVisible(hwnd))
+                return true;
+            var candidate = CaptureWindowByHwnd(hwnd);
+            if (candidate == null || IsSelf(candidate) || string.IsNullOrWhiteSpace(candidate.WindowTitle))
+                return true;
+            found = candidate;
+            return false;
+        }, 0);
+        return found;
+    }
+
+    public AppTarget? GetActiveTarget(AppTarget currentTarget) => GetActiveTarget(currentTarget, string.Empty);
+
+    public AppTarget? GetActiveTarget(AppTarget currentTarget, string goal)
     {
         var fg = CaptureForegroundWindow();
         if (fg != null && fg.WindowHandle != IntPtr.Zero)
         {
+            // The app the command names ("open notepad and …") came to the front, e.g. launched early while
+            // the user was still speaking: adopt it instead of aborting on a foreground mismatch
+            if (fg.ProcessId != currentTarget.ProcessId && !string.IsNullOrEmpty(goal) && IsAppNamedInGoal(fg, goal))
+            {
+                return fg;
+            }
+
             // If current target is the desktop or shell, auto-switch to active application
             if (IsDesktopOrShell(currentTarget) && !IsDesktopOrShell(fg))
             {
@@ -39,6 +103,13 @@ public class WindowCaptureService : IWindowCaptureService, IWindowTracker
         }
         return currentTarget;
     }
+
+    private static bool IsAppNamedInGoal(AppTarget window, string goal) =>
+        GhostHand.Core.Jev.JevDecisionModel.ExtractAppLaunchCandidates(goal).Any(app =>
+            window.ProcessName.Contains(app, StringComparison.OrdinalIgnoreCase) ||
+            // Store apps (Camera, Photos) run in ApplicationFrameHost, so match their window title too
+            window.WindowTitle.StartsWith(app, StringComparison.OrdinalIgnoreCase) ||
+            (app.Length >= 4 && app.Contains(window.ProcessName, StringComparison.OrdinalIgnoreCase)));
 
     public static bool IsDesktopOrShell(AppTarget? target)
     {

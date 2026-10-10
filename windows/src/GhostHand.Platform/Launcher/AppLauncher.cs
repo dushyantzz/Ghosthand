@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using GhostHand.Core.Agent;
 using GhostHand.Core.Interfaces;
 using GhostHand.Core.Jev;
@@ -32,6 +32,7 @@ public class AppLauncher : IAppLauncher
     public AppLauncher(ILogger<AppLauncher>? logger = null)
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<AppLauncher>.Instance;
+        StoreAppCatalog.Preload();
     }
 
     public bool TryExtractAppLaunch(string goal, out string appName, out string launchCommand)
@@ -87,6 +88,13 @@ public class AppLauncher : IAppLauncher
             }
         }
 
+        // Safety first: a blocked command must never resolve to (and focus) a running process either
+        if (!IsSafeLaunchCommand(command))
+        {
+            _logger.LogWarning("Refusing to launch command '{Command}': safety violation.", command);
+            throw new InvalidOperationException($"Launch of '{command}' was blocked by safety policy.");
+        }
+
         // Check if application is already running with an open window -> focus it!
         var runningTarget = FindRunningAppTarget(appName, command);
         if (runningTarget != null && runningTarget.WindowHandle != IntPtr.Zero)
@@ -97,14 +105,10 @@ public class AppLauncher : IAppLauncher
             return runningTarget;
         }
 
-        if (!IsSafeLaunchCommand(command))
-        {
-            _logger.LogWarning("Refusing to launch command '{Command}': safety violation.", command);
-            throw new InvalidOperationException($"Launch of '{command}' was blocked by safety policy.");
-        }
-
         _logger.LogInformation("Launching application '{AppName}' via command '{Command}'", appName, command);
 
+        var launchStartedAt = DateTime.Now;
+        var previousForeground = IntPtr.Zero;
         try
         {
             var psi = new ProcessStartInfo
@@ -113,6 +117,8 @@ public class AppLauncher : IAppLauncher
                 UseShellExecute = true
             };
 
+            launchStartedAt = DateTime.Now;
+            previousForeground = WindowCaptureService.CaptureCurrentForegroundWindow()?.WindowHandle ?? IntPtr.Zero;
             Process.Start(psi);
         }
         catch (Exception ex)
@@ -123,7 +129,7 @@ public class AppLauncher : IAppLauncher
 
         // Wait for window to appear and become foreground
         var expectedProcess = GetExpectedProcessName(appName, command);
-        return await WaitForNewForegroundTargetAsync(expectedProcess, cancellationToken);
+        return await WaitForNewForegroundTargetAsync(expectedProcess, cancellationToken, launchStartedAt, previousForeground);
     }
 
     public async Task<AppTarget?> LaunchUrlAsync(Uri url, CancellationToken cancellationToken = default)
@@ -152,9 +158,24 @@ public class AppLauncher : IAppLauncher
         return await WaitForNewForegroundTargetAsync(null, cancellationToken);
     }
 
+    // Built-in Windows surfaces that have no app entry of their own, or whose name also matches other
+    // Start-menu shortcuts ("settings" used to open "WSL Settings")
+    private static readonly Dictionary<string, string> WindowsUriAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["settings"] = "ms-settings:",
+        ["windows settings"] = "ms-settings:",
+        ["control panel"] = "control",
+    };
+
     private static bool ResolveLaunchCommand(string appName, out string launchCommand)
     {
         var trimmed = appName.Trim();
+
+        if (WindowsUriAliases.TryGetValue(trimmed, out var alias))
+        {
+            launchCommand = alias;
+            return true;
+        }
 
         // 1. Windows App Paths registry lookup (registered desktop apps)
         if (TryFindInAppPathsRegistry(trimmed, out var appPath))
@@ -167,6 +188,13 @@ public class AppLauncher : IAppLauncher
         if (TryFindStartMenuShortcut(trimmed, out var shortcutPath))
         {
             launchCommand = shortcutPath;
+            return true;
+        }
+
+        // 2b. Microsoft Store apps (Camera, Photos, Clock, Store editions of WhatsApp/Spotify, ...)
+        if (StoreAppCatalog.TryFind(trimmed, TimeSpan.FromSeconds(3), out var aumid))
+        {
+            launchCommand = $@"shell:AppsFolder\{aumid}";
             return true;
         }
 
@@ -288,8 +316,11 @@ public class AppLauncher : IAppLauncher
         var expectedName = !string.IsNullOrEmpty(command) ? GetExpectedProcessName(appName, command) : appName;
         if (string.IsNullOrEmpty(expectedName)) expectedName = appName;
 
-        // 1. Direct match by process name
-        var target = WindowCaptureService.CaptureWindowByProcessName(expectedName);
+        // 1. Direct match by process name, or by window title for Store apps (hosted by ApplicationFrameHost)
+        var target = WindowCaptureService.CaptureWindowByProcessName(expectedName)
+                     ?? (command?.StartsWith("shell:AppsFolder", StringComparison.OrdinalIgnoreCase) == true
+                         ? WindowCaptureService.CaptureWindowByTitle(expectedName)
+                         : null);
         if (target != null && target.WindowHandle != IntPtr.Zero)
             return target;
 
@@ -304,6 +335,7 @@ public class AppLauncher : IAppLauncher
                     try
                     {
                         if (proc.ProcessName.Contains(expectedName, StringComparison.OrdinalIgnoreCase) ||
+                            NameTokens(expectedName).Any(t => proc.ProcessName.Contains(t, StringComparison.OrdinalIgnoreCase)) ||
                             (!string.IsNullOrEmpty(proc.MainWindowTitle) && proc.MainWindowTitle.Contains(expectedName, StringComparison.OrdinalIgnoreCase)))
                         {
                             var captured = WindowCaptureService.CaptureWindowByProcessId(proc.Id);
@@ -318,6 +350,37 @@ public class AppLauncher : IAppLauncher
         catch { }
 
         return null;
+    }
+
+    // Words that appear in many app names and identify none of them
+    private static readonly HashSet<string> GenericNameWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "microsoft", "windows", "google", "app", "apps", "desktop", "ide", "browser", "player", "studio", "the", "for",
+        "explorer" // explorer.exe is also the desktop/taskbar shell, so "File Explorer" must not match it by word
+    };
+
+    /// <summary>Distinctive words of an app name: "Antigravity IDE" → ["Antigravity"], "Task Manager" → ["Task", "Manager"].</summary>
+    private static IEnumerable<string> NameTokens(string name) =>
+        name.Split(new[] { ' ', '-', '_', '.' }, StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length >= 4 && !GenericNameWords.Contains(w));
+
+    /// <summary>The whole name in the process name or title, or a distinctive word of it in the process name.</summary>
+    public static bool NameMatches(string expected, AppTarget window) =>
+        window.ProcessName.Contains(expected, StringComparison.OrdinalIgnoreCase) ||
+        window.WindowTitle.Contains(expected, StringComparison.OrdinalIgnoreCase) ||
+        NameTokens(expected).Any(t => window.ProcessName.Contains(t, StringComparison.OrdinalIgnoreCase));
+
+    private static bool StartedSince(int processId, DateTime since)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.StartTime >= since;
+        }
+        catch
+        {
+            return false; // protected or exited process
+        }
     }
 
     private static void BringWindowToForeground(AppTarget target)
@@ -354,6 +417,12 @@ public class AppLauncher : IAppLauncher
 
     public static string GetExpectedProcessName(string appName, string? command)
     {
+        // Store apps run in ApplicationFrameHost / their own host; match the window by the app's name
+        if (!string.IsNullOrEmpty(command) && command.StartsWith("shell:AppsFolder", StringComparison.OrdinalIgnoreCase))
+        {
+            return appName.Trim();
+        }
+
         if (!string.IsNullOrEmpty(command) && (command.Equals("ms-settings:", StringComparison.OrdinalIgnoreCase) ||
             appName.Contains("settings", StringComparison.OrdinalIgnoreCase)))
         {
@@ -372,7 +441,11 @@ public class AppLauncher : IAppLauncher
         return appName.Trim();
     }
 
-    private async Task<AppTarget?> WaitForNewForegroundTargetAsync(string? expectedProcessName, CancellationToken cancellationToken)
+    private async Task<AppTarget?> WaitForNewForegroundTargetAsync(
+        string? expectedProcessName,
+        CancellationToken cancellationToken,
+        DateTime? launchStartedAt = null,
+        IntPtr previousForeground = default)
     {
         var sw = Stopwatch.StartNew();
         AppTarget? lastCaptured = null;
@@ -384,7 +457,9 @@ public class AppLauncher : IAppLauncher
             // 1. Actively check if expected process window already exists and can be focused
             if (!string.IsNullOrEmpty(expectedProcessName))
             {
-                var byProc = WindowCaptureService.CaptureWindowByProcessName(expectedProcessName);
+                var byProc = WindowCaptureService.CaptureWindowByProcessName(expectedProcessName)
+                             ?? NameTokens(expectedProcessName).Select(WindowCaptureService.CaptureWindowByProcessName).FirstOrDefault(t => t != null)
+                             ?? WindowCaptureService.CaptureWindowByTitle(expectedProcessName);
                 if (byProc != null && byProc.WindowHandle != IntPtr.Zero)
                 {
                     _logger.LogInformation("Captured launched window by process name: {ProcessName} - '{Title}'", byProc.ProcessName, byProc.WindowTitle);
@@ -399,10 +474,19 @@ public class AppLauncher : IAppLauncher
             {
                 if (!string.IsNullOrEmpty(expectedProcessName))
                 {
-                    if (fg.ProcessName.Contains(expectedProcessName, StringComparison.OrdinalIgnoreCase) ||
-                        fg.WindowTitle.Contains(expectedProcessName, StringComparison.OrdinalIgnoreCase))
+                    if (NameMatches(expectedProcessName, fg))
                     {
                         _logger.LogInformation("Captured newly launched target window in foreground: {ProcessName} - '{Title}'", fg.ProcessName, fg.WindowTitle);
+                        return fg;
+                    }
+
+                    // The shortcut name often differs from the program's ("Antigravity IDE" runs as Antigravity.exe,
+                    // "VS Code" as Code.exe): a window that just came to the front from a process started by this
+                    // launch is the app, whatever it's called. Previously this waited the full 5 s and gave up.
+                    if (launchStartedAt.HasValue && fg.WindowHandle != previousForeground && !WindowCaptureService.IsSelf(fg) &&
+                        StartedSince(fg.ProcessId, launchStartedAt.Value.AddSeconds(-1)))
+                    {
+                        _logger.LogInformation("Captured window of newly started process: {ProcessName} - '{Title}'", fg.ProcessName, fg.WindowTitle);
                         return fg;
                     }
                 }
@@ -418,13 +502,19 @@ public class AppLauncher : IAppLauncher
 
         if (!string.IsNullOrEmpty(expectedProcessName))
         {
-            var byProc = WindowCaptureService.CaptureWindowByProcessName(expectedProcessName);
+            var byProc = WindowCaptureService.CaptureWindowByProcessName(expectedProcessName)
+                         ?? WindowCaptureService.CaptureWindowByTitle(expectedProcessName);
             if (byProc != null)
             {
                 _logger.LogInformation("Captured launched window by process name fallback: {ProcessName} - '{Title}'", byProc.ProcessName, byProc.WindowTitle);
                 BringWindowToForeground(byProc);
                 return byProc;
             }
+
+            // Don't hand back whatever else is in front (it made an open Copilot window the target of
+            // "open the calculator"); the agent loop adopts the app's window once it appears
+            _logger.LogWarning("No window found for launched app '{App}'.", expectedProcessName);
+            return null;
         }
 
         return lastCaptured ?? WindowCaptureService.CaptureCurrentForegroundWindow();

@@ -13,6 +13,10 @@ public partial class PromptPopupWindow : Window
 
     public event Action<string, AppTarget?>? TaskSubmitted;
     public event Action? Cancelled;
+    /// <summary>Voice recording started (a new utterance).</summary>
+    public event Action? ListeningStarted;
+    /// <summary>Live transcript while the user is still speaking, with the current target.</summary>
+    public event Action<string, AppTarget?>? PartialTranscript;
 
     public ISpeechInput? SpeechInput { get; set; }
 
@@ -151,10 +155,10 @@ public partial class PromptPopupWindow : Window
 
     private async void MicButton_Click(object sender, RoutedEventArgs e)
     {
-        // If already listening, stop recording
+        // If already listening, finish now and use what was said (Esc / close still cancels)
         if (_isListening)
         {
-            _speechCts?.Cancel();
+            SpeechInput?.RequestStop();
             return;
         }
 
@@ -171,17 +175,26 @@ public partial class PromptPopupWindow : Window
         var token = _speechCts.Token;
 
         MicButton.Content = "⏹ Stop";
-        StatusText.Text = "🎙 Listening… speak your command (auto-submits when done)";
+        StatusText.Text = "🎙 Listening… speak your command (auto-submits when you pause)";
         StatusText.Foreground = System.Windows.Media.Brushes.LightGreen;
 
+        // Live transcript: words appear in the input box while the user is still talking
         void OnSpeechRecognizing(string partial)
         {
-            Dispatcher.Invoke(() =>
+            Dispatcher.BeginInvoke(() =>
             {
-                StatusText.Text = $"📝 \"{partial}\"";
-                StatusText.Foreground = System.Windows.Media.Brushes.LightSkyBlue;
+                if (token.IsCancellationRequested) return;
+                PromptInput.Text = partial;
+                PromptInput.CaretIndex = partial.Length;
+                if (!StatusText.Text.StartsWith("⚡"))
+                {
+                    StatusText.Text = "🎙 Listening… (live)";
+                    StatusText.Foreground = System.Windows.Media.Brushes.LightSkyBlue;
+                }
+                PartialTranscript?.Invoke(partial, _currentTarget);
             });
         }
+        ListeningStarted?.Invoke();
         SpeechInput.SpeechRecognizing += OnSpeechRecognizing;
 
         try
@@ -196,7 +209,7 @@ public partial class PromptPopupWindow : Window
                 StatusText.Text = $"✓ \"{transcript}\" — executing…";
                 StatusText.Foreground = System.Windows.Media.Brushes.LightGreen;
 
-                await Task.Delay(350);
+                await Task.Delay(120);
                 Submit();
             }
             else if (token.IsCancellationRequested)

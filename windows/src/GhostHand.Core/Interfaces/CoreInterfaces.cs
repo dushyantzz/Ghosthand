@@ -86,6 +86,9 @@ public interface ISpeechInput : IDisposable
 
     /// <summary>Record audio and return the final transcription.</summary>
     Task<string> TranscribeAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Finish the current recording early and return what was said so far (cancellation discards it).</summary>
+    void RequestStop() { }
 }
 
 public interface IClock
@@ -105,5 +108,8 @@ public interface IAppLauncher
 public interface IWindowTracker
 {
     AppTarget? GetActiveTarget(AppTarget currentTarget);
+
+    /// <summary>Like <see cref="GetActiveTarget(AppTarget)"/>, also adopting a foreground app the goal names.</summary>
+    AppTarget? GetActiveTarget(AppTarget currentTarget, string goal) => GetActiveTarget(currentTarget);
 }
 

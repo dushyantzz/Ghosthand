@@ -10,6 +10,9 @@ public static class ElementRanker
         "RadioButton", "ComboBox", "ListItem", "Edit", "Document", "SplitButton"
     };
 
+    /// <summary>Slots kept for labelled status/result text, so buttons can't crowd it out.</summary>
+    public const int ReservedEvidenceSlots = 8;
+
     public static IReadOnlyList<AccessibilityElement> RankAndFilter(
         IEnumerable<AccessibilityElement> elements,
         ScreenReaderOptions options)
@@ -28,6 +31,9 @@ public static class ElementRanker
         // 5. Visual order (top-to-bottom, then left-to-right)
         var sorted = filtered
             .OrderByDescending(e => e.Focused)
+            // Media transport controls usually sit at the bottom of the window and would be cut
+            // by MaxCandidates, yet they're the only evidence that "play X" has succeeded
+            .ThenByDescending(e => IsPlaybackControl(e))
             .ThenByDescending(e => IsInteractive(e.Role))
             .ThenByDescending(e => !string.IsNullOrWhiteSpace(e.DisplayLabel))
             .ThenByDescending(e => e.IsOutcomeEvidence)
@@ -35,8 +41,17 @@ public static class ElementRanker
             .ThenBy(e => e.Frame.X)
             .ToList();
 
-        // Cap to MaxCandidates while preserving top elements
-        var candidateList = sorted.Take(options.MaxCandidates).ToList();
+        // Cap to MaxCandidates, but reserve room for labelled status text. Interactive controls rank first, so a
+        // button-heavy window (Calculator: 40+ buttons) used to push out its only result ("Display is 95"),
+        // leaving the model no way to see that an action worked or that the task is done.
+        var evidence = sorted
+            .Where(e => e.IsOutcomeEvidence && !IsInteractive(e.Role) && !string.IsNullOrWhiteSpace(e.DisplayLabel))
+            .OrderBy(e => e.Frame.Y).ThenBy(e => e.Frame.X)
+            .Take(Math.Min(ReservedEvidenceSlots, options.MaxCandidates / 4))
+            .ToHashSet(ReferenceEqualityComparer.Instance);
+        var others = sorted.Where(e => !evidence.Contains(e)).Take(options.MaxCandidates - evidence.Count)
+            .ToHashSet(ReferenceEqualityComparer.Instance);
+        var candidateList = sorted.Where(e => evidence.Contains(e) || others.Contains(e)).ToList();
 
         // Assign stable sequential IDs: e1, e2, e3...
         var result = new List<AccessibilityElement>(candidateList.Count);
@@ -55,6 +70,12 @@ public static class ElementRanker
     public static bool IsInteractive(string role) =>
         InteractiveRoles.Contains(role) ||
         (role.StartsWith("AX", StringComparison.OrdinalIgnoreCase) && InteractiveRoles.Contains(role[2..]));
+
+    public static bool IsPlaybackControl(AccessibilityElement element) =>
+        System.Text.RegularExpressions.Regex.IsMatch(
+            element.DisplayLabel ?? string.Empty,
+            @"^(?:pause|play|resume|now playing|next|previous|skip)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     private static bool IsOnScreen(AccessibilityElement element)
     {

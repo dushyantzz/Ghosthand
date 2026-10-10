@@ -67,8 +67,18 @@ public class ActionExecutor : IActionExecutor, IDisposable
         // Re-focus target window before physical execution
         if (TargetWindowHandle.HasValue && TargetWindowHandle.Value != IntPtr.Zero)
         {
-            PInvoke.SetForegroundWindow((HWND)TargetWindowHandle.Value);
+            var hwnd = (HWND)TargetWindowHandle.Value;
+            PInvoke.SetForegroundWindow(hwnd);
             await Task.Delay(60, cancellationToken);
+
+            // Windows refuses focus changes from a process that doesn't have focus (e.g. while an always-on-top
+            // panel like Copilot is active). A synthetic Alt press lifts that lock; then retry once.
+            if (PInvoke.GetForegroundWindow() != hwnd)
+            {
+                InputSimulator.SendKey(VIRTUAL_KEY.VK_MENU);
+                PInvoke.SetForegroundWindow(hwnd);
+                await Task.Delay(80, cancellationToken);
+            }
         }
 
         // Live execution mode: verify foreground process matches expected target (UIPI / safety check)
@@ -151,6 +161,18 @@ public class ActionExecutor : IActionExecutor, IDisposable
 
                 case AgentOperation.TypeText:
                     return ExecuteTypeText(targetElement, decision.TextValue ?? string.Empty, submitWithEnter: IsSearchOrAddressBar(targetElement));
+
+                case AgentOperation.TypeKeys:
+                    // Esc clears Calculator (and cancels a half-typed entry elsewhere), so earlier button
+                    // clicks can't merge with the typed expression ("34" + "3+4" = 343+4)
+                    InputSimulator.SendKey(VIRTUAL_KEY.VK_ESCAPE);
+                    await Task.Delay(50, cancellationToken);
+                    // Type one character at a time: Calculator drops keystrokes from a single batch
+                    // SendInput call, and needs VK_MULTIPLY/VK_ADD etc. instead of Unicode for operators
+                    InputSimulator.TypeTextSlowly(decision.TextValue ?? string.Empty);
+                    await Task.Delay(50, cancellationToken);
+                    InputSimulator.SendKey(VIRTUAL_KEY.VK_RETURN);
+                    return ActionResult.SuccessResult($"Typed '{decision.TextValue}' on the keyboard and pressed Enter");
 
                 case AgentOperation.PressReturn:
                     InputSimulator.SendKey(VIRTUAL_KEY.VK_RETURN);

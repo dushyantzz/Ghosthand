@@ -36,8 +36,17 @@ public static class UrlLauncherValidator
         return true;
     }
 
-    public static IReadOnlyList<Uri> ExtractWebUrls(string prompt)
+    /// <param name="activeContext">Process name + window title of the app the user is in. When the prompt
+    /// doesn't name a platform ("play X"), a Spotify/YouTube context is used instead of defaulting to YouTube.</param>
+    public static IReadOnlyList<Uri> ExtractWebUrls(string prompt, string? activeContext = null)
     {
+        var contextPlatform = activeContext switch
+        {
+            string c when c.Contains("spotify", StringComparison.OrdinalIgnoreCase) => "spotify",
+            string c when c.Contains("youtube", StringComparison.OrdinalIgnoreCase) => "youtube",
+            _ => string.Empty
+        };
+
         if (string.IsNullOrWhiteSpace(prompt))
             return Array.Empty<Uri>();
 
@@ -163,6 +172,8 @@ public static class UrlLauncherValidator
             var query = musicMatch.Groups[2].Value.Trim().Trim('"', '\'');
             query = Regex.Replace(query, @"^(?:any\s+song\s+(?:of|by)|songs?\s+(?:of|by)|music\s+(?:of|by)|track\s+(?:of|by))\s+", "", RegexOptions.IgnoreCase).Trim();
             var platform = (musicMatch.Groups[3].Success ? musicMatch.Groups[3].Value : (musicMatch.Groups[1].Success ? musicMatch.Groups[1].Value : "")).Trim().ToLowerInvariant();
+            if (platform.Length == 0)
+                platform = contextPlatform;
 
             if (!string.IsNullOrWhiteSpace(query) && query.Length > 1)
             {
@@ -187,7 +198,7 @@ public static class UrlLauncherValidator
         if (generalSearchMatch.Success)
         {
             var query = generalSearchMatch.Groups[1].Value.Trim().Trim('"', '\'');
-            var engineOrApp = generalSearchMatch.Groups[2].Success ? generalSearchMatch.Groups[2].Value.Trim().ToLowerInvariant() : "";
+            var engineOrApp = generalSearchMatch.Groups[2].Success ? generalSearchMatch.Groups[2].Value.Trim().ToLowerInvariant() : contextPlatform;
 
             if (!string.IsNullOrWhiteSpace(query) && query.Length > 1 && !query.Equals("there", StringComparison.OrdinalIgnoreCase))
             {

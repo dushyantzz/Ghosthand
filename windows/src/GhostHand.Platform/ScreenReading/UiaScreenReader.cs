@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
@@ -72,33 +72,57 @@ public class UiaScreenReader : IScreenReader, IDisposable
                 cacheRequest.Add(_automation.PropertyLibrary.Element.HasKeyboardFocus);
                 cacheRequest.Add(_automation.PropertyLibrary.Element.IsPassword);
                 cacheRequest.Add(_automation.PropertyLibrary.Element.IsOffscreen);
-                cacheRequest.TreeScope = TreeScope.Subtree;
+                // Everything ExtractElement reads is cached, so extraction makes no cross-process calls
+                cacheRequest.Add(_automation.PropertyLibrary.PatternAvailability.IsInvokePatternAvailable);
+                cacheRequest.Add(_automation.PropertyLibrary.PatternAvailability.IsValuePatternAvailable);
+                cacheRequest.Add(_automation.PropertyLibrary.PatternAvailability.IsTogglePatternAvailable);
+                cacheRequest.Add(_automation.PropertyLibrary.PatternAvailability.IsScrollPatternAvailable);
+                cacheRequest.Add(_automation.PropertyLibrary.Value.Value);
+                cacheRequest.TreeScope = TreeScope.Element;
 
-                // 4. Batch fetch descendants with active cache request
-                AutomationElement[] descendants;
+                // 4. Bounded depth-first walk in document order. FindAllDescendants marshalled the *entire* tree
+                // (2-3k nodes in Chromium apps: 6s for Spotify, up to 17s for a YouTube page) only to keep the
+                // first MaxNodes. Walking the same pre-order and stopping at MaxNodes keeps exactly those nodes
+                // (breadth-first would spend the budget on the browser's tab strip and miss page controls),
+                // and hidden/scrolled-away branches are skipped. Values are read while the cache is active;
+                // afterwards FlaUI would re-query every property live.
                 using (cacheRequest.Activate())
                 {
-                    descendants = root.FindAllDescendants() ?? Array.Empty<AutomationElement>();
-                }
+                    var stack = new Stack<(AutomationElement Element, int Depth)>();
+                    stack.Push((root, 0));
+                    var visited = 0;
 
-                var allElements = new List<AutomationElement>(descendants.Length + 1) { root };
-                allElements.AddRange(descendants);
+                    var rootEl = ExtractElement(root);
+                    if (rootEl != null) rawElements.Add(rootEl);
 
-                int count = 0;
-                foreach (var el in allElements)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    if (count++ >= _options.MaxNodes)
+                    while (stack.Count > 0 && visited < _options.MaxNodes)
                     {
-                        _logger.LogDebug("Reached MaxNodes cap ({Cap}). Halting UIA traversal.", _options.MaxNodes);
-                        break;
-                    }
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var (node, depth) = stack.Pop();
 
-                    var accEl = ExtractElement(el);
-                    if (accEl != null)
-                    {
-                        rawElements.Add(accEl);
+                        AutomationElement[] children;
+                        try { children = node.FindAllChildren(); }
+                        catch { continue; }
+
+                        // Pre-order: record this node's children now, then descend into the first child next
+                        var toVisit = new List<AutomationElement>(children.Length);
+                        foreach (var child in children)
+                        {
+                            if (++visited > _options.MaxNodes)
+                            {
+                                _logger.LogDebug("Reached MaxNodes cap ({Cap}). Halting UIA traversal.", _options.MaxNodes);
+                                break;
+                            }
+
+                            var accEl = ExtractElement(child);
+                            if (accEl != null)
+                                rawElements.Add(accEl);
+
+                            if (depth + 1 < _options.MaxDepth && !IsHiddenBranch(child))
+                                toVisit.Add(child);
+                        }
+                        for (int i = toVisit.Count - 1; i >= 0; i--)
+                            stack.Push((toVisit[i], depth + 1));
                     }
                 }
             }
@@ -135,6 +159,24 @@ public class UiaScreenReader : IScreenReader, IDisposable
         }, cancellationToken);
     }
 
+    /// <summary>Off-screen with no area: a collapsed menu, hidden panel or scrolled-away list — nothing inside is actionable.</summary>
+    private static bool IsHiddenBranch(AutomationElement element)
+    {
+        try
+        {
+            if (!element.Properties.IsOffscreen.ValueOrDefault) return false;
+            var rect = element.Properties.BoundingRectangle.ValueOrDefault;
+            return rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool CachedFlag(AutomationElement element, FlaUI.Core.Identifiers.PropertyId property) =>
+        element.FrameworkAutomationElement.TryGetPropertyValue<bool>(property, out var value) && value;
+
     private AccessibilityElement? ExtractElement(AutomationElement element)
     {
         try
@@ -154,9 +196,10 @@ public class UiaScreenReader : IScreenReader, IDisposable
             {
                 try
                 {
-                    if (element.Patterns.Value.IsSupported)
+                    if (CachedFlag(element, _automation.PropertyLibrary.PatternAvailability.IsValuePatternAvailable) &&
+                        element.FrameworkAutomationElement.TryGetPropertyValue<string>(_automation.PropertyLibrary.Value.Value, out var cachedValue))
                     {
-                        val = element.Patterns.Value.PatternOrDefault?.Value.ValueOrDefault ?? string.Empty;
+                        val = cachedValue ?? string.Empty;
                     }
                 }
                 catch { }
@@ -198,10 +241,11 @@ public class UiaScreenReader : IScreenReader, IDisposable
             var actions = new List<string>();
             try
             {
-                if (element.Patterns.Invoke.IsSupported) actions.Add("click");
-                if (element.Patterns.Value.IsSupported) actions.Add("type");
-                if (element.Patterns.Toggle.IsSupported) actions.Add("toggle");
-                if (element.Patterns.Scroll.IsSupported) actions.Add("scroll");
+                var availability = _automation.PropertyLibrary.PatternAvailability;
+                if (CachedFlag(element, availability.IsInvokePatternAvailable)) actions.Add("click");
+                if (CachedFlag(element, availability.IsValuePatternAvailable)) actions.Add("type");
+                if (CachedFlag(element, availability.IsTogglePatternAvailable)) actions.Add("toggle");
+                if (CachedFlag(element, availability.IsScrollPatternAvailable)) actions.Add("scroll");
             }
             catch { }
 

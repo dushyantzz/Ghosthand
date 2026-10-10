@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using FluentAssertions;
 using GhostHand.Core.Models;
 using GhostHand.Core.ScreenReading;
@@ -251,5 +251,25 @@ public class ScreenReaderTests
         var act = () => reader.ReadElementsAsync(zeroTarget);
         await act.Should().ThrowAsync<ArgumentException>()
             .WithMessage("*invalid window handle*");
+    }
+
+    [Fact]
+    public void RD05_ButtonHeavyWindow_KeepsResultText()
+    {
+        // Calculator: ~45 buttons, and the result is a non-interactive Text at the top of the window
+        var elements = new List<AccessibilityElement>
+        {
+            new() { Id = "", Role = "Text", Label = "Expression is 45 + 50=", Frame = new Rectangle(0, 80, 300, 20) },
+            new() { Id = "", Role = "Text", Label = "Display is 95", Frame = new Rectangle(0, 100, 300, 40) },
+        };
+        for (int i = 0; i < 45; i++)
+            elements.Add(new() { Id = "", Role = "Button", Label = $"Button {i}", Frame = new Rectangle(i % 4 * 70, 200 + i / 4 * 40, 60, 30) });
+
+        var result = ElementRanker.RankAndFilter(elements, ScreenReaderOptions.Default);
+
+        result.Should().HaveCount(ScreenReaderOptions.Default.MaxCandidates);
+        result.Should().Contain(e => e.DisplayLabel == "Display is 95");
+        result.Should().Contain(e => e.DisplayLabel == "Expression is 45 + 50=");
+        result.Count(e => e.Role == "Button").Should().Be(ScreenReaderOptions.Default.MaxCandidates - 2);
     }
 }

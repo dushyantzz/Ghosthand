@@ -324,4 +324,75 @@ public class JevClientTests
         decision.TargetId.Should().Be("btn1");
         decision.TargetLabel.Should().Be("Search");
     }
+
+    [Fact]
+    public async Task JV09_RepeatGuard_DropsRepeatedSearch_AndReportsPlayback()
+    {
+        EvaluateRequest? captured = null;
+        var clientMock = new Mock<IJevClient>();
+        clientMock.Setup(c => c.EvaluateAsync(It.IsAny<EvaluateRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EvaluateRequest, CancellationToken>((r, _) => captured = r)
+            .ReturnsAsync(new EvaluateResponse());
+
+        var model = new JevDecisionModel(clientMock.Object, _options, NullLogger<JevDecisionModel>.Instance);
+        var target = new AppTarget { ProcessId = 1, ProcessName = "chrome", WindowTitle = "Spotify - Search" };
+        var elements = new List<AccessibilityElement>
+        {
+            new() { Id = "e1", Role = "Edit", Label = "Spotify - Search" },
+            new() { Id = "e2", Role = "Button", Label = "Pause" }
+        };
+        var history = new[]
+        {
+            "TypeAndEnter:e1 (Spotify - Search) -> ok",
+            "PressSpace: () -> ok",
+            "TypeAndEnter:e1 (Spotify - Search) -> ok"
+        };
+
+        await model.DecideNextActionAsync("play dhoondta hoon on spotify", target, elements, history);
+
+        var options = (Dictionary<string, string>)captured!.Questions["nextAction"].Criteria!;
+        options.Keys.Should().NotContain(k => k.StartsWith("type_and_enter:e1") || k.StartsWith("type:e1"));
+        options.Keys.Should().NotContain("press:space");
+        options.Keys.Should().Contain("done");
+        JsonSerializer.Serialize(captured.State).Should().Contain("PLAYING");
+    }
+
+    private static async Task<Dictionary<string, string>> CaptureOptions(string goal, AppTarget target, List<AccessibilityElement> elements, string[] history)
+    {
+        EvaluateRequest? captured = null;
+        var clientMock = new Mock<IJevClient>();
+        clientMock.Setup(c => c.EvaluateAsync(It.IsAny<EvaluateRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EvaluateRequest, CancellationToken>((r, _) => captured ??= r)
+            .ReturnsAsync(new EvaluateResponse());
+        var model = new JevDecisionModel(clientMock.Object, new JevOptions(), NullLogger<JevDecisionModel>.Instance);
+        await model.DecideNextActionAsync(goal, target, elements, history);
+        return (Dictionary<string, string>)captured!.Questions["nextAction"].Criteria!;
+    }
+
+    [Fact]
+    public async Task JV10_PlayInSpotifyWebPlayer_SearchesSpotifyNotYouTube()
+    {
+        var target = new AppTarget { ProcessId = 1, ProcessName = "chrome", WindowTitle = "Spotify - Web Player: Music for everyone - Google Chrome" };
+        var options = await CaptureOptions("play dooron dooron", target, new List<AccessibilityElement>(), Array.Empty<string>());
+
+        options.Keys.Should().Contain(k => k.StartsWith("open_url:https://open.spotify.com/search/"));
+        options.Keys.Should().NotContain(k => k.Contains("youtube.com"));
+    }
+
+    [Fact]
+    public async Task JV11_PlayInSpotifyDesktop_UsesInAppSearchOnly()
+    {
+        var target = new AppTarget { ProcessId = 1, ProcessName = "Spotify", WindowTitle = "Spotify Premium" };
+        var elements = new List<AccessibilityElement>
+        {
+            new() { Id = "e1", Role = "Edit", Label = "What do you want to play?" },
+            new() { Id = "e2", Role = "Button", Label = "Pause" }
+        };
+        var options = await CaptureOptions("play dooron dooron", target, elements, new[] { "Click:e9 (Play) -> ok" });
+
+        options.Keys.Should().NotContain(k => k.StartsWith("open_url:"));
+        options.Keys.Should().Contain("type_and_enter:e1:dooron dooron");
+        options.Keys.Should().NotContain("click:e2", "clicking Pause would undo a play task");
+        options.Keys.Should().NotContain("press:space", "a Play click already toggled playback");
+    }
 }

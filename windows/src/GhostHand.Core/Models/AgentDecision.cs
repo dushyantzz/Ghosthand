@@ -1,4 +1,4 @@
-namespace GhostHand.Core.Models;
+﻿namespace GhostHand.Core.Models;
 
 public enum AgentOperation
 {
@@ -18,7 +18,10 @@ public enum AgentOperation
     PressMediaPlay,
     Done,
     Blocked,
-    AskUser
+    AskUser,
+    /// <summary>Type text on the keyboard into whatever has focus, then press Enter (no target element).
+    /// For apps without a text box, e.g. Calculator: "450+40" + Enter.</summary>
+    TypeKeys
 }
 
 /// <summary>

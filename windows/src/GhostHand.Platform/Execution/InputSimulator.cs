@@ -114,6 +114,60 @@ public static class InputSimulator
         }
     }
 
+    /// <summary>
+    /// Types text one character at a time with a small delay between each keystroke.
+    /// Arithmetic operators (+, -, *, /) are sent as virtual key codes so that Calculator
+    /// (and similar apps) interpret them correctly instead of ignoring KEYEVENTF_UNICODE
+    /// scan codes for those characters.
+    /// </summary>
+    public static void TypeTextSlowly(string text, int delayMs = 30)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+
+        foreach (var ch in text)
+        {
+            // Map arithmetic operators to virtual keys that Calculator understands
+            VIRTUAL_KEY? vk = ch switch
+            {
+                '+' => VIRTUAL_KEY.VK_ADD,
+                '-' => VIRTUAL_KEY.VK_SUBTRACT,
+                '*' => VIRTUAL_KEY.VK_MULTIPLY,
+                '/' => VIRTUAL_KEY.VK_DIVIDE,
+                _ => null
+            };
+
+            if (vk.HasValue)
+            {
+                SendKey(vk.Value);
+            }
+            else
+            {
+                TypeChar(ch);
+            }
+
+            Thread.Sleep(delayMs);
+        }
+    }
+
+    /// <summary>Sends a single Unicode character via KEYEVENTF_UNICODE.</summary>
+    private static unsafe void TypeChar(char ch)
+    {
+        var inputs = new INPUT[2];
+
+        inputs[0].type = INPUT_TYPE.INPUT_KEYBOARD;
+        inputs[0].Anonymous.ki.wScan = ch;
+        inputs[0].Anonymous.ki.dwFlags = KEYBD_EVENT_FLAGS.KEYEVENTF_UNICODE;
+
+        inputs[1].type = INPUT_TYPE.INPUT_KEYBOARD;
+        inputs[1].Anonymous.ki.wScan = ch;
+        inputs[1].Anonymous.ki.dwFlags = KEYBD_EVENT_FLAGS.KEYEVENTF_UNICODE | KEYBD_EVENT_FLAGS.KEYEVENTF_KEYUP;
+
+        fixed (INPUT* pInputs = inputs)
+        {
+            PInvoke.SendInput(2, pInputs, sizeof(INPUT));
+        }
+    }
+
     public static void SelectAllAndClear()
     {
         // Ctrl + A

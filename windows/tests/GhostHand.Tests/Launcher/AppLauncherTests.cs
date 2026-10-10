@@ -1,4 +1,4 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using GhostHand.Core.Agent;
 using GhostHand.Core.Interfaces;
 using GhostHand.Core.Jev;
@@ -60,6 +60,18 @@ public class AppLauncherTests
         var urlCandidates = UrlLauncherValidator.ExtractWebUrls("open https://news.ycombinator.com");
         urlCandidates.Should().NotBeEmpty();
         urlCandidates[0].Host.Should().Be("news.ycombinator.com");
+    }
+
+    [Theory]
+    [InlineData("open the crome browser and play dhoondta hoon on spotify", "chrome")]
+    [InlineData("open the crome browser and play dhoondta hoon on spotify", "spotify")]
+    [InlineData("open microsoft edge", "msedge")]
+    [InlineData("launch the spotify app", "spotify")]
+    [InlineData("play aditya rikhari on spotify", "spotify")]
+    public void AL04b_AppCandidates_NormalizeArticlesSuffixesAndMisspellings(string goal, string expectedApp)
+    {
+        JevDecisionModel.ExtractAppLaunchCandidates(goal)
+            .Should().Contain(c => c.Equals(expectedApp, StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -169,6 +181,8 @@ public class AppLauncherTests
     [InlineData("open spotify and play any song of aditya rikhari", "aditya rikhari")]
     [InlineData("play aditya rikhari on spotify", "aditya rikhari")]
     [InlineData("listen to Bohemian Rhapsody", "Bohemian Rhapsody")]
+    [InlineData("Open the notepad and write, hello. How are you today?", "hello")]
+    [InlineData("Open Chrome and search: weather forecast.", "weather forecast")]
     public void AL08_ExtractCandidatePhrases_ExtractsSearchAndWriteTerms(string goal, string expectedPhrase)
     {
         var candidates = JevDecisionModel.ExtractCandidatePhrases(goal);

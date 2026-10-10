@@ -32,6 +32,7 @@ public partial class App : Application
     private PromptPopupWindow? _popup;
     private ConfirmationDialog? _confirmationDialog;
     private CancellationTokenSource? _runCts;
+    private readonly EarlyIntentDetector _earlyIntent = new();
     private ILogger<App>? _logger;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -74,7 +75,11 @@ public partial class App : Application
         // Pre-create windows (hidden at startup for instant display)
         _popup = new PromptPopupWindow();
         _popup.SpeechInput = _serviceProvider.GetService<ISpeechInput>();
+        if (_popup.SpeechInput is WhisperSpeechService whisper)
+            _ = whisper.WarmUpAsync();
         _popup.TaskSubmitted += OnTaskSubmitted;
+        _popup.ListeningStarted += () => _earlyIntent.Reset();
+        _popup.PartialTranscript += OnPartialTranscript;
         _popup.Cancelled += OnTaskCancelled;
 
         _confirmationDialog = new ConfirmationDialog();
@@ -97,9 +102,20 @@ public partial class App : Application
         services.AddSingleton<IWindowCaptureService, WindowCaptureService>();
         services.AddSingleton<IHotkeyService, LowLevelKeyboardHook>();
         services.AddSingleton<IAppLauncher, AppLauncher>();
-        services.AddSingleton<ISpeechInput>(sp => new WhisperSpeechService(
-            fallbackService: null, // No fallback — WindowsSpeechService requires privacy policy acceptance
-            logger: sp.GetService<ILogger<WhisperSpeechService>>()));
+        services.AddSingleton<ISpeechInput>(sp =>
+        {
+            var logger = sp.GetService<ILogger<WhisperSpeechService>>();
+            var whisper = new WhisperSpeechService(
+                fallbackService: null, // No fallback — WindowsSpeechService requires privacy policy acceptance
+                logger: logger);
+
+            // GHOSTHAND_STT=deepgram: Deepgram (via OpenRouter) produces the final transcript; Whisper stays
+            // local for the instant live partials that drive early actions
+            var cloud = OpenRouterDeepgramTranscriber.FromEnvironment(logger);
+            if (cloud != null)
+                whisper.CloudTranscriber = cloud.TranscribeAsync;
+            return whisper;
+        });
     }
 
     private void OnHotkeyPressed(object? sender, EventArgs e)
@@ -125,12 +141,50 @@ public partial class App : Application
         });
     }
 
+    /// <summary>
+    /// Speculative start: while the user is still talking ("open Spotify and play …"), launch/focus the
+    /// named app so it's ready when the sentence ends. Only app launches run early; everything else waits
+    /// for the full command.
+    /// </summary>
+    private void OnPartialTranscript(string partial, Core.Models.AppTarget? target)
+    {
+        var app = _earlyIntent.TryGetEarlyLaunch(partial, target?.ProcessName);
+        var launcher = _serviceProvider?.GetService<IAppLauncher>();
+        if (app == null || launcher == null)
+            return;
+
+        _logger?.LogInformation("Early launch while user is still speaking: {App}", app);
+        _popup?.UpdateStatus($"⚡ Opening {app} while you speak…");
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var launched = await launcher.LaunchAppAsync(app);
+                if (launched != null && launched.WindowHandle != IntPtr.Zero)
+                {
+                    _popup?.UpdateTarget(launched);
+                    _popup?.UpdateStatus($"⚡ {app} is ready — keep talking…");
+                }
+                else
+                {
+                    _earlyIntent.Reset(); // let a later, clearer partial retry
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Early launch of {App} failed; the full command will handle it.", app);
+                _earlyIntent.Reset();
+            }
+        });
+    }
+
     private void OnTaskSubmitted(string goal, Core.Models.AppTarget? target)
     {
         _logger?.LogInformation("Goal submitted: '{Goal}' for app '{ProcessName}' (HWND: 0x{Hwnd:X})",
             goal, target?.ProcessName ?? "Unknown", target?.WindowHandle.ToInt64() ?? 0);
 
-        if (target == null || target.WindowHandle == IntPtr.Zero)
+        if (target == null || target.WindowHandle == IntPtr.Zero || WindowCaptureService.IsSelf(target))
         {
             target = WindowCaptureService.CaptureCurrentForegroundWindow()
                      ?? WindowCaptureService.CaptureWindowByProcessName("explorer")
@@ -156,20 +210,20 @@ public partial class App : Application
             {
                 var credentialStore = _serviceProvider?.GetService<ICredentialStore>() ?? new CredentialStore();
                 var jevOptions = JevOptions.FromEnvironment();
-                if (string.IsNullOrWhiteSpace(jevOptions.ApiKey))
+                if (string.IsNullOrWhiteSpace(jevOptions.ApiKey) && jevOptions.RequiresApiKey)
                 {
                     jevOptions.ApiKey = credentialStore.GetApiKey();
                 }
 
-                if (string.IsNullOrWhiteSpace(jevOptions.ApiKey))
+                if (string.IsNullOrWhiteSpace(jevOptions.ApiKey) && jevOptions.RequiresApiKey)
                 {
                     _logger?.LogWarning("No API key available for agent loop.");
-                    _popup?.OnRunCompleted("API key is not configured. Please set AI_GATEWAY_API_KEY.", false);
+                    _popup?.OnRunCompleted("API key is not configured. Please set OPENROUTER_API_KEY or AI_GATEWAY_API_KEY.", false);
                     return;
                 }
 
                 using var httpClient = new HttpClient();
-                var jevClient = new JevClient(httpClient, jevOptions, NullLogger<JevClient>.Instance);
+                var jevClient = JevClientFactory.Create(httpClient, jevOptions);
                 var decisionModel = new JevDecisionModel(jevClient, jevOptions, NullLogger<JevDecisionModel>.Instance);
 
                 var ocrService = new WindowsOcrService(NullLogger<WindowsOcrService>.Instance);
@@ -216,6 +270,10 @@ public partial class App : Application
 
                 loop.TargetChanged += newTarget =>
                 {
+                    // Keep the executor's foreground safety check on the same window the loop now targets;
+                    // otherwise every action after a switch aborted with "Foreground process changed mid-action"
+                    actionExecutor.TargetWindowHandle = newTarget.WindowHandle;
+                    actionExecutor.ExpectedProcessId = newTarget.ProcessId;
                     _popup?.UpdateTarget(newTarget);
                 };
 

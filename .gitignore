@@ -25,3 +25,6 @@ obj/
 CLAUDE.md
 AGENTS.md
 docs/
+
+# Local Laya decision server (Python venv + model cache)
+laya-server/.venv/

@@ -119,6 +119,7 @@ public class AgentLoop
         var history = new List<string>();
         var loopGuard = new LoopGuard(_options.MaxConsecutiveStalls);
         int step = 0;
+        int unverifiedDones = 0;
 
         _logger.LogInformation("Starting AgentLoop for goal '{Goal}' on target '{Target}' (DryRun: {DryRun})",
             goal, currentTarget.ProcessName, _options.DryRun);
@@ -178,7 +179,7 @@ public class AgentLoop
                 // 0. Auto-sync target window if tracking service indicates active foreground app changed
                 if (_windowTracker != null)
                 {
-                    var trackedTarget = _windowTracker.GetActiveTarget(currentTarget);
+                    var trackedTarget = _windowTracker.GetActiveTarget(currentTarget, goal);
                     if (trackedTarget != null && (trackedTarget.WindowHandle != currentTarget.WindowHandle || trackedTarget.ProcessId != currentTarget.ProcessId))
                     {
                         _logger.LogInformation("Active target auto-switched to {Process} ('{Title}')", trackedTarget.ProcessName, trackedTarget.WindowTitle);
@@ -228,7 +229,20 @@ public class AgentLoop
                         return AgentRunResult.Completed(step, history);
                     }
 
-                    _logger.LogInformation("Done operation verification was inconclusive. Continuing loop.");
+                    // Unverified "done" changes nothing on screen, so repeating it only spins until the loop guard
+                    // trips. Record it (the decision model then withholds "done" for one step, forcing a real
+                    // action); a second unverified "done" means the task is most likely complete.
+                    unverifiedDones++;
+                    history.Add($"{AgentOperation.Done}: () -> not verified");
+                    if (unverifiedDones >= 2)
+                    {
+                        _logger.LogInformation("Model reported done twice without verification; finishing.");
+                        NotifyStatus("Task looks complete.");
+                        return AgentRunResult.Completed(step, history);
+                    }
+
+                    _logger.LogInformation("Done operation verification was inconclusive. Trying another action.");
+                    continue;
                 }
 
                 // 5. Check if decision is AskUser / Low confidence

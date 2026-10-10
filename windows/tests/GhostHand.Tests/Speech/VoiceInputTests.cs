@@ -16,6 +16,9 @@ public class VoiceInputTests
     [Fact]
     public async Task VO_01_NoAudioDevice_FallsBackGracefullyToSecondaryService()
     {
+        // Simulates a machine without a microphone; on a machine with one, this would really record for 30s
+        if (WhisperSpeechService.HasMicrophone()) return;
+
         var mockFallback = new Mock<ISpeechInput>();
         mockFallback
             .Setup(f => f.TranscribeAsync(It.IsAny<CancellationToken>()))
@@ -34,6 +37,9 @@ public class VoiceInputTests
     [Fact]
     public async Task VO_01_NoDeviceAndNoFallback_ThrowsDescriptiveExceptionWithoutCrash()
     {
+        // Simulates a machine without a microphone; on a machine with one, this would really record for 30s
+        if (WhisperSpeechService.HasMicrophone()) return;
+
         using var whisperService = new WhisperSpeechService(
             fallbackService: null,
             customModelDir: Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
@@ -114,6 +120,9 @@ public class VoiceInputTests
     [Fact]
     public async Task VO_03_MissingWhisperModel_FallsBackGracefully()
     {
+        // Simulates a machine without a microphone; on a machine with one, this would really record for 30s
+        if (WhisperSpeechService.HasMicrophone()) return;
+
         var fallbackRecognizer = new Mock<ISpeechInput>();
         fallbackRecognizer
             .Setup(f => f.TranscribeAsync(It.IsAny<CancellationToken>()))
@@ -128,6 +137,28 @@ public class VoiceInputTests
 
         var result = await whisperService.TranscribeAsync(CancellationToken.None);
         result.Should().Be("fallback result");
+    }
+
+    [Theory]
+    [InlineData("[BLANK_AUDIO]", "")]
+    [InlineData(" play dooron dooron (music) ", "play dooron dooron")]
+    [InlineData("open spotify *coughs*  and play", "open spotify and play")]
+    [InlineData("Open Chrome and search Open Chrome and search Open Chrome and search", "Open Chrome and search")]
+    [InlineData("Open Spotify and play Doron Doron.", "Open Spotify and play Doron Doron.")]
+    [InlineData("play dooron dooron dooron", "play dooron dooron dooron")]
+    [InlineData("Open the Notepad and write hell. Open the Notepad and write hell. Open the Notepad and write hell.", "Open the Notepad and write hell.")]
+    public void VO_05_CleanTranscript_DropsNonSpeechMarkers(string raw, string expected)
+    {
+        WhisperSpeechService.CleanTranscript(raw).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("opensp叫 our N doorway.", "opensp our N doorway.")]
+    [InlineData("Open Spotify and play Doran Doran.", "Open Spotify and play Doran Doran.")]
+    [InlineData("play Beyoncé", "play Beyoncé")]
+    public void VO_06_StripNonLatin_KeepsLatinTextOnly(string raw, string expected)
+    {
+        WhisperSpeechService.StripNonLatin(raw).Should().Be(expected);
     }
 
     [Fact]

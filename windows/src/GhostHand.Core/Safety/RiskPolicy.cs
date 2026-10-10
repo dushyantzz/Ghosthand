@@ -103,7 +103,8 @@ public class RiskPolicy : IRiskPolicy
             if (!string.IsNullOrWhiteSpace(target.Label)) textToInspect.Add(target.Label);
             if (!string.IsNullOrWhiteSpace(target.Value)) textToInspect.Add(target.Value);
         }
-        if (decision.Operation == AgentOperation.TypeText && !string.IsNullOrWhiteSpace(decision.TextValue))
+        if (decision.Operation is AgentOperation.TypeText or AgentOperation.TypeAndEnter or AgentOperation.TypeKeys &&
+            !string.IsNullOrWhiteSpace(decision.TextValue))
         {
             textToInspect.Add(decision.TextValue);
         }
