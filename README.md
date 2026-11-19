@@ -1,4 +1,5 @@
-# GhostHand (Windows) [![Featured on JevMade](https://jevmade.com/badges/featured-on-jevmade.svg)](https://jevmade.com/e/ghosthand)
+# GhostHand (Windows) 
+[![Featured on JevMade](https://jevmade.com/badges/featured-on-jevmade.svg)](https://jevmade.com/e/ghosthand)
 
 > A Windows-native AI desktop assistant. Focus an app, press **Ctrl + Win**, and tell it what to do.
 
