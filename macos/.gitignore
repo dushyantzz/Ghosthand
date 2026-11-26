@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+dist/
+.modulecache/
+tmp/
+*.app/
+.env
